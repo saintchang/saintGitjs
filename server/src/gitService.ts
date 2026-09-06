@@ -79,25 +79,89 @@ export async function commit(repoPath: string, message: string): Promise<string>
   }
 }
 
+export interface FileCommitInfo {
+  hash: string;
+  message: string;
+  relativeTime: string;
+  author: string;
+}
+
+/**
+ * 取得 Repo 內所有已追蹤檔案清單
+ * 底層對應: git ls-files
+ */
+export async function getAllFiles(repoPath: string): Promise<string[]> {
+  const { stdout } = await runGit(['ls-files'], repoPath);
+  const lines = stdout.split('\n');
+  return lines.map((l) => l.trim()).filter((l) => l.length > 0);
+}
+
+/**
+ * 取得特定檔案的歷史 Commit 記錄
+ * 底層對應: git log -n <limit> --pretty=format:%h|%s|%cr|%an -- <filePath>
+ */
+export async function getFileCommits(
+  repoPath: string,
+  filePath: string,
+  limit: number = 15
+): Promise<FileCommitInfo[]> {
+  if (!filePath || filePath.trim().length === 0) {
+    throw new Error('filePath is required');
+  }
+
+  try {
+    const { stdout } = await runGit(
+      ['log', `-n`, String(limit), '--pretty=format:%h|%s|%cr|%an', '--', filePath],
+      repoPath
+    );
+
+    const lines = stdout.split('\n');
+    const commits: FileCommitInfo[] = [];
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      const parts = trimmed.split('|');
+      if (parts.length >= 4) {
+        commits.push({
+          hash: parts[0],
+          message: parts[1],
+          relativeTime: parts[2],
+          author: parts.slice(3).join('|'),
+        });
+      }
+    }
+
+    return commits;
+  } catch (err: any) {
+    return [];
+  }
+}
+
 /**
  * 取得檔案差異 (Diff)
  * @param repoPath 本地專案絕對路徑
  * @param filePath 檔案相對路徑
  * @param staged 是否查看已暫存差異 (--cached)
  * @param isUntracked 是否為未追蹤檔案 (--no-index)
+ * @param commitHash 是否查看特定歷史 Commit 改動 (git show <commitHash> -- <filePath>)
  */
 export async function getDiff(
   repoPath: string,
   filePath: string,
   staged: boolean = false,
-  isUntracked: boolean = false
+  isUntracked: boolean = false,
+  commitHash?: string
 ): Promise<string> {
   if (!filePath || filePath.trim().length === 0) {
     throw new Error('filePath is required');
   }
 
   let args: string[];
-  if (isUntracked) {
+  if (commitHash && commitHash.trim().length > 0) {
+    // 檢視特定歷史 Commit 對此檔案之改動
+    args = ['show', commitHash.trim(), '--', filePath];
+  } else if (isUntracked) {
     // 未追蹤檔案與 /dev/null 比較以取得全量新增內容
     args = ['diff', '--no-index', '--', '/dev/null', filePath];
   } else if (staged) {

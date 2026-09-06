@@ -1,6 +1,6 @@
 import express, { Request, Response } from 'express';
 import cors from 'cors';
-import { getStatus, stageAll, commit, getDiff } from './gitService.js';
+import { getStatus, stageAll, commit, getDiff, getAllFiles, getFileCommits } from './gitService.js';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -58,7 +58,7 @@ app.post('/api/git/commit', async (req: Request, res: Response) => {
 
 // 4. 取得檔案差異 (Diff)
 app.post('/api/git/diff', async (req: Request, res: Response) => {
-  const { repoPath, filePath, staged, isUntracked } = req.body;
+  const { repoPath, filePath, staged, isUntracked, commitHash } = req.body;
   if (!repoPath || typeof repoPath !== 'string') {
     return res.status(400).json({ error: 'repoPath is required' });
   }
@@ -67,8 +67,53 @@ app.post('/api/git/diff', async (req: Request, res: Response) => {
   }
 
   try {
-    const diff = await getDiff(repoPath, filePath, Boolean(staged), Boolean(isUntracked));
-    return res.json({ diff, filePath, staged: Boolean(staged), isUntracked: Boolean(isUntracked) });
+    const diff = await getDiff(
+      repoPath,
+      filePath,
+      Boolean(staged),
+      Boolean(isUntracked),
+      typeof commitHash === 'string' ? commitHash : undefined
+    );
+    return res.json({
+      diff,
+      filePath,
+      staged: Boolean(staged),
+      isUntracked: Boolean(isUntracked),
+      commitHash: commitHash || null,
+    });
+  } catch (err: any) {
+    return res.status(400).json({ error: err.message });
+  }
+});
+
+// 5. 取得 Repo 內所有已追蹤檔案清單
+app.post('/api/git/all-files', async (req: Request, res: Response) => {
+  const { repoPath } = req.body;
+  if (!repoPath || typeof repoPath !== 'string') {
+    return res.status(400).json({ error: 'repoPath is required' });
+  }
+
+  try {
+    const files = await getAllFiles(repoPath);
+    return res.json(files);
+  } catch (err: any) {
+    return res.status(400).json({ error: err.message });
+  }
+});
+
+// 6. 取得特定檔案歷史 Commit 記錄
+app.post('/api/git/file-commits', async (req: Request, res: Response) => {
+  const { repoPath, filePath, limit } = req.body;
+  if (!repoPath || typeof repoPath !== 'string') {
+    return res.status(400).json({ error: 'repoPath is required' });
+  }
+  if (!filePath || typeof filePath !== 'string') {
+    return res.status(400).json({ error: 'filePath is required' });
+  }
+
+  try {
+    const commits = await getFileCommits(repoPath, filePath, limit ? Number(limit) : 15);
+    return res.json(commits);
   } catch (err: any) {
     return res.status(400).json({ error: err.message });
   }

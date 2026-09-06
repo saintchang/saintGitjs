@@ -1,21 +1,35 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
-import { get_status, stage_all, commit, get_diff, type GitFileStatus } from './api/git';
+import {
+  get_status,
+  stage_all,
+  commit,
+  get_diff,
+  get_all_files,
+  get_file_commits,
+  type GitFileStatus,
+  type FileCommitInfo,
+} from './api/git';
 
 const repoPath = ref<string>(localStorage.getItem('saintGit_repoPath') || '');
 const fileStatuses = ref<GitFileStatus[]>([]);
+const allFiles = ref<string[]>([]);
+const allFilesSearch = ref<string>('');
+const activeListTab = ref<'changes' | 'all'>('changes');
 const commitMessage = ref<string>('');
 const isLoading = ref<boolean>(false);
 const errorMsg = ref<string>('');
 const successMsg = ref<string>('');
 const hasLoaded = ref<boolean>(false);
 
-// Diff 檢視狀態
+// Diff 與歷史檢視狀態
 const selectedFile = ref<GitFileStatus | null>(null);
 const selectedDiffMode = ref<'unstaged' | 'staged'>('unstaged');
 const currentDiff = ref<string>('');
 const isDiffLoading = ref<boolean>(false);
 const diffError = ref<string>('');
+const fileCommits = ref<FileCommitInfo[]>([]);
+const selectedCommitHash = ref<string>('');
 
 const saveRepoPath = () => {
   localStorage.setItem('saintGit_repoPath', repoPath.value);
@@ -54,6 +68,13 @@ const unstagedCount = computed(() => {
 
 const hasStagedChanges = computed(() => stagedCount.value > 0);
 
+// 過濾所有檔案列表
+const filteredAllFiles = computed(() => {
+  if (!allFilesSearch.value.trim()) return allFiles.value;
+  const q = allFilesSearch.value.trim().toLowerCase();
+  return allFiles.value.filter((f) => f.toLowerCase().includes(q));
+});
+
 // 解析狀態徽章呈現資訊
 const getStatusBadge = (code: string) => {
   const s0 = code[0] || ' ';
@@ -77,6 +98,9 @@ const getStatusBadge = (code: string) => {
   if (s1 === 'D') {
     return { class: 'tag-unstaged', label: '未暫存刪除 (Deleted)' };
   }
+  if (code.trim() === '') {
+    return { class: 'tag-default', label: '已提交 (Committed)' };
+  }
   return { class: 'tag-default', label: '異動' };
 };
 
@@ -84,7 +108,14 @@ const getStatusBadge = (code: string) => {
 const fetchStatusData = async () => {
   if (!repoPath.value.trim()) return;
   saveRepoPath();
-  fileStatuses.value = await get_status(repoPath.value.trim());
+
+  const [statuses, files] = await Promise.all([
+    get_status(repoPath.value.trim()),
+    get_all_files(repoPath.value.trim()).catch(() => []),
+  ]);
+
+  fileStatuses.value = statuses;
+  allFiles.value = files;
   hasLoaded.value = true;
 
   // 若有異動檔案：維持當前選取的檔案，或自動預設選取第 1 個檔案展示 Diff
@@ -93,43 +124,88 @@ const fetchStatusData = async () => {
       const matched = fileStatuses.value.find((f) => f.path === selectedFile.value!.path);
       if (matched) {
         selectedFile.value = matched;
-        await loadDiffContent(matched, selectedDiffMode.value);
+        await loadDiffContent(matched, selectedDiffMode.value, selectedCommitHash.value);
       } else {
         await handleSelectFile(fileStatuses.value[0]);
       }
     } else {
       await handleSelectFile(fileStatuses.value[0]);
     }
+  } else if (selectedFile.value) {
+    // 即使工作區無未提交異動，若正在檢視某個檔案歷史則維持更新
+    await loadDiffContent(selectedFile.value, selectedDiffMode.value, selectedCommitHash.value);
   } else {
     closeDiff();
+  }
+};
+
+// 載入該檔案歷史 Commit 列表
+const loadFileCommits = async (filePath: string) => {
+  if (!repoPath.value.trim()) return;
+  try {
+    fileCommits.value = await get_file_commits(repoPath.value.trim(), filePath, 15);
+  } catch {
+    fileCommits.value = [];
   }
 };
 
 // 點擊檔案列載入 Diff
 const handleSelectFile = async (file: GitFileStatus) => {
   selectedFile.value = file;
+  selectedCommitHash.value = '';
 
-  // 決定預設顯示模式：若只有暫存變更則預設看暫存，其餘預設看工作區
+  await loadFileCommits(file.path);
+
+  // 決定預設顯示模式：
   if (file.statusCode.startsWith('?')) {
     selectedDiffMode.value = 'unstaged';
   } else if (isItemStaged(file.statusCode) && file.statusCode[1] === ' ') {
     selectedDiffMode.value = 'staged';
-  } else {
+  } else if (file.statusCode.trim().length > 0) {
     selectedDiffMode.value = 'unstaged';
+  } else if (fileCommits.value.length > 0) {
+    // 若無工作區異動，預設直接檢視最新歷史 Commit
+    selectedCommitHash.value = fileCommits.value[0].hash;
   }
 
-  await loadDiffContent(file, selectedDiffMode.value);
+  await loadDiffContent(file, selectedDiffMode.value, selectedCommitHash.value);
+};
+
+// 從「所有檔案」分頁點選檔案
+const handleSelectFromAllFiles = async (filePath: string) => {
+  const found = fileStatuses.value.find((f) => f.path === filePath);
+  const fileItem: GitFileStatus = found || { statusCode: '  ', path: filePath };
+  await handleSelectFile(fileItem);
 };
 
 // 切換暫存/未暫存 Diff
 const switchDiffMode = async (mode: 'unstaged' | 'staged') => {
   if (!selectedFile.value) return;
+  selectedCommitHash.value = '';
   selectedDiffMode.value = mode;
   await loadDiffContent(selectedFile.value, mode);
 };
 
+// 切換指定歷史 Commit 差異
+const handleCommitSelect = async (hash: string) => {
+  selectedCommitHash.value = hash;
+  if (!selectedFile.value) return;
+  await loadDiffContent(selectedFile.value, selectedDiffMode.value, hash);
+};
+
+// 返回當前工作區變更
+const handleBackToWorkingTree = async () => {
+  selectedCommitHash.value = '';
+  if (!selectedFile.value) return;
+  await loadDiffContent(selectedFile.value, selectedDiffMode.value);
+};
+
 // 請求 Diff 資料
-const loadDiffContent = async (file: GitFileStatus, mode: 'unstaged' | 'staged') => {
+const loadDiffContent = async (
+  file: GitFileStatus,
+  mode: 'unstaged' | 'staged',
+  commitHash?: string
+) => {
   if (!repoPath.value.trim()) return;
   isDiffLoading.value = true;
   diffError.value = '';
@@ -139,7 +215,13 @@ const loadDiffContent = async (file: GitFileStatus, mode: 'unstaged' | 'staged')
   const isStaged = mode === 'staged';
 
   try {
-    const res = await get_diff(repoPath.value.trim(), file.path, isStaged, isUntracked);
+    const res = await get_diff(
+      repoPath.value.trim(),
+      file.path,
+      isStaged,
+      isUntracked,
+      commitHash && commitHash.trim() ? commitHash.trim() : undefined
+    );
     currentDiff.value = res.diff;
   } catch (err: any) {
     diffError.value = err.message || '讀取差異失敗';
@@ -152,6 +234,8 @@ const closeDiff = () => {
   selectedFile.value = null;
   currentDiff.value = '';
   diffError.value = '';
+  fileCommits.value = [];
+  selectedCommitHash.value = '';
 };
 
 // 解析 Unified Diff 每一行之型別與內容
@@ -266,7 +350,7 @@ onMounted(() => {
       <div class="title-group">
         <h1>saintGit</h1>
         <span class="badge">MVP</span>
-        <span class="badge badge-feature">支援 Diff 差異檢視</span>
+        <span class="badge badge-feature">支援全庫檔案與 Diff 檢視</span>
       </div>
       <p class="subtitle">極簡 Git Web GUI 工具 (Node.js + Vue 3)</p>
     </header>
@@ -302,68 +386,132 @@ onMounted(() => {
       <button class="close-btn" @click="successMsg = ''">×</button>
     </div>
 
-    <!-- 異動清單與暫存操作 -->
+    <!-- 檔案清單與分頁切換 -->
     <section v-if="hasLoaded" class="card list-section">
-      <div class="section-header">
-        <div class="section-title">
-          <h2>異動檔案清單</h2>
+      <!-- 分頁導覽列 -->
+      <div class="tab-nav-bar">
+        <div class="tab-buttons">
+          <button
+            class="tab-pill-btn"
+            :class="{ active: activeListTab === 'changes' }"
+            @click="activeListTab = 'changes'"
+          >
+            目前異動 ({{ fileStatuses.length }})
+          </button>
+          <button
+            class="tab-pill-btn"
+            :class="{ active: activeListTab === 'all' }"
+            @click="activeListTab = 'all'"
+          >
+            全庫檔案 ({{ allFiles.length }})
+          </button>
+        </div>
+
+        <div class="section-actions" v-if="activeListTab === 'changes'">
           <div class="summary-pills" v-if="fileStatuses.length > 0">
             <span class="pill pill-staged">已暫存: {{ stagedCount }}</span>
             <span class="pill pill-unstaged">未暫存: {{ unstagedCount }}</span>
           </div>
+          <button
+            class="btn btn-secondary"
+            :disabled="isLoading || fileStatuses.length === 0"
+            @click="handleStageAll"
+          >
+            Stage All (全部暫存)
+          </button>
         </div>
-        <button
-          class="btn btn-secondary"
-          :disabled="isLoading || fileStatuses.length === 0"
-          @click="handleStageAll"
-        >
-          Stage All (全部暫存)
-        </button>
       </div>
 
-      <!-- 清單內容 -->
-      <div v-if="fileStatuses.length > 0" class="file-table-wrapper">
-        <table class="file-table">
-          <thead>
-            <tr>
-              <th style="width: 170px;">狀態標籤</th>
-              <th style="width: 80px;">代碼</th>
-              <th>檔案相對路徑（點擊任一檔案即時展開 Diff）</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr
-              v-for="(item, index) in fileStatuses"
-              :key="index"
-              class="clickable-row"
-              :class="{ 'active-row': selectedFile?.path === item.path }"
-              @click="handleSelectFile(item)"
-            >
-              <td>
-                <span class="tag" :class="getStatusBadge(item.statusCode).class">
-                  {{ getStatusBadge(item.statusCode).label }}
-                </span>
-              </td>
-              <td>
-                <code class="raw-code">{{ item.statusCode }}</code>
-              </td>
-              <td class="file-path-cell">
-                <span class="file-path">{{ item.path }}</span>
-                <span class="diff-action-tag" :class="{ 'active-tag': selectedFile?.path === item.path }">
-                  {{ selectedFile?.path === item.path ? '檢視中 ✓' : '點擊看 Diff ➔' }}
-                </span>
-              </td>
-            </tr>
-          </tbody>
-        </table>
+      <!-- 分頁 1: 目前異動清單 -->
+      <div v-if="activeListTab === 'changes'">
+        <div v-if="fileStatuses.length > 0" class="file-table-wrapper">
+          <table class="file-table">
+            <thead>
+              <tr>
+                <th style="width: 170px;">狀態標籤</th>
+                <th style="width: 80px;">代碼</th>
+                <th>檔案相對路徑（點擊任一檔案即時展開 Diff）</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="(item, index) in fileStatuses"
+                :key="index"
+                class="clickable-row"
+                :class="{ 'active-row': selectedFile?.path === item.path }"
+                @click="handleSelectFile(item)"
+              >
+                <td>
+                  <span class="tag" :class="getStatusBadge(item.statusCode).class">
+                    {{ getStatusBadge(item.statusCode).label }}
+                  </span>
+                </td>
+                <td>
+                  <code class="raw-code">{{ item.statusCode }}</code>
+                </td>
+                <td class="file-path-cell">
+                  <span class="file-path">{{ item.path }}</span>
+                  <span class="diff-action-tag" :class="{ 'active-tag': selectedFile?.path === item.path }">
+                    {{ selectedFile?.path === item.path ? '檢視中 ✓' : '點擊看 Diff ➔' }}
+                  </span>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- Working Tree Clean 狀態 -->
+        <div v-else class="empty-state">
+          <div class="empty-icon">🎉</div>
+          <p class="empty-text">Working Tree Clean</p>
+          <p class="empty-sub">目前沒有未提交的異動檔案</p>
+          <p class="empty-tip">
+            💡 提示：您可以切換至上方 <strong>「全庫檔案」</strong> 頁籤，挑選倉庫中的任意檔案檢視其歷史版本與變更內容！
+          </p>
+        </div>
       </div>
 
-      <!-- Working Tree Clean 狀態 -->
-      <div v-else class="empty-state">
-        <div class="empty-icon">🎉</div>
-        <p class="empty-text">Working Tree Clean</p>
-        <p class="empty-sub">目前沒有未提交的異動檔案</p>
-        <p class="empty-tip">💡 提示：若要檢視 Diff 差異，請在此專案目錄隨意修改任一檔案，再點擊上方的「Refresh 整理狀態」，下方將自動展開該檔案的 Diff 差異！</p>
+      <!-- 分頁 2: 全庫檔案總覽與搜尋 -->
+      <div v-if="activeListTab === 'all'" class="all-files-panel">
+        <div class="search-box-row">
+          <input
+            v-model="allFilesSearch"
+            type="text"
+            class="search-input"
+            placeholder="🔍 輸入關鍵字搜尋任意檔案 (例如：App.vue, package.json, src/)..."
+          />
+          <span class="search-stat">顯示 {{ filteredAllFiles.length }} / 共 {{ allFiles.length }} 個檔案</span>
+        </div>
+
+        <div v-if="filteredAllFiles.length > 0" class="file-table-wrapper all-files-table">
+          <table class="file-table">
+            <thead>
+              <tr>
+                <th>檔案相對路徑</th>
+                <th style="width: 160px; text-align: right;">操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="file in filteredAllFiles"
+                :key="file"
+                class="clickable-row"
+                :class="{ 'active-row': selectedFile?.path === file }"
+                @click="handleSelectFromAllFiles(file)"
+              >
+                <td class="file-path">{{ file }}</td>
+                <td style="text-align: right;">
+                  <span class="diff-action-tag" :class="{ 'active-tag': selectedFile?.path === file }">
+                    {{ selectedFile?.path === file ? '檢視中 ✓' : '檢視 Diff / 歷史 ➔' }}
+                  </span>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div v-else class="empty-search">
+          沒有符合「{{ allFilesSearch }}」的檔案
+        </div>
       </div>
     </section>
 
@@ -374,8 +522,35 @@ onMounted(() => {
           <h3>差異檢視</h3>
           <code class="diff-file-pill">{{ selectedFile.path }}</code>
 
-          <!-- 若同時具有暫存與未暫存差異，提供分頁切換按鈕 -->
-          <div v-if="hasBothDiffs(selectedFile.statusCode)" class="diff-mode-tabs">
+          <!-- 歷史版本 Commit 下拉選單 -->
+          <div v-if="fileCommits.length > 0" class="commit-select-wrapper">
+            <span class="commit-label">版本：</span>
+            <select
+              v-model="selectedCommitHash"
+              class="commit-select"
+              @change="handleCommitSelect(selectedCommitHash)"
+            >
+              <option value="" v-if="selectedFile.statusCode.trim()">
+                當前工作區變更 (Working Tree)
+              </option>
+              <option v-for="c in fileCommits" :key="c.hash" :value="c.hash">
+                [{{ c.hash }}] {{ c.message }} ({{ c.relativeTime }})
+              </option>
+            </select>
+            <button
+              v-if="selectedCommitHash && selectedFile.statusCode.trim()"
+              class="btn-restore-worktree"
+              @click="handleBackToWorkingTree"
+            >
+              回當前工作區
+            </button>
+          </div>
+
+          <!-- 若同時具有暫存與未暫存差異，且未指定歷史 commit 時提供切換分頁 -->
+          <div
+            v-if="!selectedCommitHash && hasBothDiffs(selectedFile.statusCode)"
+            class="diff-mode-tabs"
+          >
             <button
               class="tab-btn"
               :class="{ active: selectedDiffMode === 'unstaged' }"
@@ -391,8 +566,12 @@ onMounted(() => {
               已暫存差異
             </button>
           </div>
-          <span v-else class="diff-mode-indicator">
+
+          <span v-else-if="!selectedCommitHash" class="diff-mode-indicator">
             {{ selectedDiffMode === 'staged' ? '（已暫存差異）' : '（工作區差異）' }}
+          </span>
+          <span v-else class="diff-commit-indicator">
+            （歷史 Commit: {{ selectedCommitHash }}）
           </span>
         </div>
         <button class="close-diff-btn" title="關閉檢視" @click="closeDiff">✕</button>
@@ -472,7 +651,7 @@ body {
 
 <style scoped>
 .app-container {
-  max-width: 960px;
+  max-width: 980px;
   margin: 2rem auto;
   padding: 0 1.5rem;
 }
@@ -496,6 +675,15 @@ h1 {
 .badge {
   background: #0969da;
   color: #fff;
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+}
+
+.badge-feature {
+  background: #2da44e;
+  color: #ffffff;
   font-size: 0.75rem;
   font-weight: 600;
   padding: 0.15rem 0.5rem;
@@ -640,15 +828,46 @@ input[type="text"]:focus {
   padding: 0 0.25rem;
 }
 
-/* 異動檔案清單 */
-.section-header {
+/* 分頁切換列 */
+.tab-nav-bar {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  border-bottom: 1px solid #d0d7de;
+  padding-bottom: 0.85rem;
   margin-bottom: 1rem;
+  flex-wrap: wrap;
+  gap: 0.75rem;
 }
 
-.section-title {
+.tab-buttons {
+  display: flex;
+  gap: 0.35rem;
+  background-color: #f6f8fa;
+  padding: 0.2rem;
+  border-radius: 6px;
+  border: 1px solid #d0d7de;
+}
+
+.tab-pill-btn {
+  font-size: 0.85rem;
+  font-weight: 600;
+  padding: 0.35rem 0.85rem;
+  border-radius: 4px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  color: #57606a;
+  transition: all 0.15s ease;
+}
+
+.tab-pill-btn.active {
+  background-color: #ffffff;
+  color: #0969da;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.section-actions {
   display: flex;
   align-items: center;
   gap: 0.75rem;
@@ -678,6 +897,54 @@ input[type="text"]:focus {
   border: 1px solid #d4a72c40;
 }
 
+/* 全庫檔案搜尋列 */
+.all-files-panel {
+  margin-top: 0.5rem;
+}
+
+.search-box-row {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 0.85rem;
+}
+
+.search-input {
+  flex: 1;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.9rem;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  background-color: #f6f8fa;
+  outline: none;
+}
+
+.search-input:focus {
+  border-color: #0969da;
+  background-color: #fff;
+  box-shadow: 0 0 0 3px rgba(9, 105, 218, 0.15);
+}
+
+.search-stat {
+  font-size: 0.8rem;
+  color: #656d76;
+  white-space: nowrap;
+}
+
+.all-files-table {
+  max-height: 380px;
+  overflow-y: auto;
+}
+
+.empty-search {
+  text-align: center;
+  padding: 2rem;
+  color: #656d76;
+  background-color: #f6f8fa;
+  border-radius: 6px;
+}
+
+/* 檔案表格 */
 .file-table-wrapper {
   border: 1px solid #d0d7de;
   border-radius: 6px;
@@ -776,15 +1043,6 @@ input[type="text"]:focus {
   color: #1f2328;
 }
 
-.badge-feature {
-  background: #2da44e;
-  color: #ffffff;
-  font-size: 0.75rem;
-  font-weight: 600;
-  padding: 0.15rem 0.5rem;
-  border-radius: 999px;
-}
-
 .diff-action-tag {
   font-size: 0.75rem;
   padding: 0.15rem 0.5rem;
@@ -806,6 +1064,32 @@ input[type="text"]:focus {
 .clickable-row:hover .diff-action-tag:not(.active-tag) {
   background-color: #ddf4ff;
   border-color: #0969da;
+}
+
+/* Empty State */
+.empty-state {
+  padding: 2.5rem 1rem;
+  text-align: center;
+  background-color: #f6f8fa;
+  border-radius: 6px;
+  border: 1px dashed #d0d7de;
+}
+
+.empty-icon {
+  font-size: 2.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.empty-text {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: #1a7f37;
+}
+
+.empty-sub {
+  font-size: 0.85rem;
+  color: #57606a;
+  margin-top: 0.25rem;
 }
 
 .empty-tip {
@@ -858,6 +1142,44 @@ input[type="text"]:focus {
   font-weight: 600;
 }
 
+.commit-select-wrapper {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.8rem;
+}
+
+.commit-label {
+  color: #57606a;
+  font-weight: 600;
+}
+
+.commit-select {
+  padding: 0.25rem 0.5rem;
+  font-size: 0.8rem;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  background-color: #f6f8fa;
+  max-width: 300px;
+  outline: none;
+}
+
+.btn-restore-worktree {
+  font-size: 0.75rem;
+  padding: 0.2rem 0.5rem;
+  border-radius: 4px;
+  border: 1px solid #0969da;
+  background-color: #f0f7ff;
+  color: #0969da;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.btn-restore-worktree:hover {
+  background-color: #0969da;
+  color: #fff;
+}
+
 .diff-mode-tabs {
   display: flex;
   gap: 0.25rem;
@@ -886,9 +1208,15 @@ input[type="text"]:focus {
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
 }
 
-.diff-mode-indicator {
+.diff-mode-indicator,
+.diff-commit-indicator {
   font-size: 0.8rem;
   color: #656d76;
+}
+
+.diff-commit-indicator {
+  color: #8250df;
+  font-weight: 600;
 }
 
 .close-diff-btn {
@@ -997,32 +1325,6 @@ input[type="text"]:focus {
 .diff-context {
   background-color: #ffffff;
   color: #1f2328;
-}
-
-/* Empty State */
-.empty-state {
-  padding: 2.5rem 1rem;
-  text-align: center;
-  background-color: #f6f8fa;
-  border-radius: 6px;
-  border: 1px dashed #d0d7de;
-}
-
-.empty-icon {
-  font-size: 2.5rem;
-  margin-bottom: 0.5rem;
-}
-
-.empty-text {
-  font-size: 1.1rem;
-  font-weight: 600;
-  color: #1a7f37;
-}
-
-.empty-sub {
-  font-size: 0.85rem;
-  color: #57606a;
-  margin-top: 0.25rem;
 }
 
 /* Commit 區塊 */

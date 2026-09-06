@@ -66,6 +66,14 @@ export interface DiffResponse {
   filePath: string;
   staged: boolean;
   isUntracked: boolean;
+  commitHash?: string | null;
+}
+
+export interface FileCommitInfo {
+  hash: string;
+  message: string;
+  relativeTime: string;
+  author: string;
 }
 
 /**
@@ -75,14 +83,15 @@ export async function get_diff(
   repoPath: string,
   filePath: string,
   staged: boolean = false,
-  isUntracked: boolean = false
+  isUntracked: boolean = false,
+  commitHash?: string
 ): Promise<DiffResponse> {
   const res = await fetch('/api/git/diff', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ repoPath, filePath, staged, isUntracked }),
+    body: JSON.stringify({ repoPath, filePath, staged, isUntracked, commitHash }),
   });
 
   const data = await res.json();
@@ -92,4 +101,49 @@ export async function get_diff(
 
   return data as DiffResponse;
 }
+
+/**
+ * 取得 Repo 內所有已追蹤檔案清單
+ */
+export async function get_all_files(repoPath: string): Promise<string[]> {
+  const res = await fetch('/api/git/all-files', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ repoPath }),
+  });
+
+  const data = await res.json();
+  if (!res.ok) {
+    throw new Error(data.error || `HTTP ${res.status}: Failed to get all files`);
+  }
+
+  return data as string[];
+}
+
+/**
+ * 取得特定檔案的歷史 Commit 記錄
+ */
+export async function get_file_commits(
+  repoPath: string,
+  filePath: string,
+  limit: number = 15
+): Promise<FileCommitInfo[]> {
+  const res = await fetch('/api/git/file-commits', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ repoPath, filePath, limit }),
+  });
+
+  const data = await res.json();
+  if (!res.ok) {
+    throw new Error(data.error || `HTTP ${res.status}: Failed to get file commits`);
+  }
+
+  return data as FileCommitInfo[];
+}
+
 

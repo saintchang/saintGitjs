@@ -97,7 +97,8 @@ interface GitFileStatus {
     "repoPath": "C:/path/to/repo",
     "filePath": "src/App.vue",
     "staged": false,
-    "isUntracked": false
+    "isUntracked": false,
+    "commitHash": "28aa613"
   }
   ```
 - **Response**:
@@ -106,13 +107,33 @@ interface GitFileStatus {
     "diff": "diff --git a/... b/...",
     "filePath": "src/App.vue",
     "staged": false,
-    "isUntracked": false
+    "isUntracked": false,
+    "commitHash": "28aa613"
   }
   ```
 - **底層對應**:
+  - 指定 `commitHash`: `git show <commitHash> -- <filePath>`
   - `staged = true`: `git diff --cached -- <filePath>`
   - `isUntracked = true`: `git diff --no-index -- /dev/null <filePath>`
   - 一般未暫存: `git diff -- <filePath>`
+
+##### 5. 取得 Repo 內所有已追蹤檔案清單
+- **Method / Path**: `POST /api/git/all-files`
+- **Request Body**:
+  ```json
+  { "repoPath": "C:/path/to/repo" }
+  ```
+- **Response**: `string[]`（相對路徑陣列）
+- **底層對應**: `git ls-files`
+
+##### 6. 取得特定檔案歷史 Commit 記錄
+- **Method / Path**: `POST /api/git/file-commits`
+- **Request Body**:
+  ```json
+  { "repoPath": "C:/path/to/repo", "filePath": "src/App.vue", "limit": 15 }
+  ```
+- **Response**: `FileCommitInfo[]`（包含 hash, message, relativeTime, author）
+- **底層對應**: `git log -n <limit> --pretty=format:%h|%s|%cr|%an -- <filePath>`
 
 #### 前端 API 呼叫簽名 (TypeScript Client)
 
@@ -121,7 +142,9 @@ interface GitFileStatus {
 get_status(repoPath: string): Promise<GitFileStatus[]>;
 stage_all(repoPath: string): Promise<void>;
 commit(repoPath: string, message: string): Promise<string>;
-get_diff(repoPath: string, filePath: string, staged?: boolean, isUntracked?: boolean): Promise<DiffResponse>;
+get_diff(repoPath: string, filePath: string, staged?: boolean, isUntracked?: boolean, commitHash?: string): Promise<DiffResponse>;
+get_all_files(repoPath: string): Promise<string[]>;
+get_file_commits(repoPath: string, filePath: string, limit?: number): Promise<FileCommitInfo[]>;
 ```
 
 ## 5. 底層 CLI 實作細節規範
