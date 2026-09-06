@@ -87,15 +87,21 @@ const fetchStatusData = async () => {
   fileStatuses.value = await get_status(repoPath.value.trim());
   hasLoaded.value = true;
 
-  // 若目前檢視中的檔案仍存在，自動更新 Diff；若已不在清單中則關閉
-  if (selectedFile.value) {
-    const matched = fileStatuses.value.find((f) => f.path === selectedFile.value!.path);
-    if (matched) {
-      selectedFile.value = matched;
-      await loadDiffContent(matched, selectedDiffMode.value);
+  // 若有異動檔案：維持當前選取的檔案，或自動預設選取第 1 個檔案展示 Diff
+  if (fileStatuses.value.length > 0) {
+    if (selectedFile.value) {
+      const matched = fileStatuses.value.find((f) => f.path === selectedFile.value!.path);
+      if (matched) {
+        selectedFile.value = matched;
+        await loadDiffContent(matched, selectedDiffMode.value);
+      } else {
+        await handleSelectFile(fileStatuses.value[0]);
+      }
     } else {
-      closeDiff();
+      await handleSelectFile(fileStatuses.value[0]);
     }
+  } else {
+    closeDiff();
   }
 };
 
@@ -260,6 +266,7 @@ onMounted(() => {
       <div class="title-group">
         <h1>saintGit</h1>
         <span class="badge">MVP</span>
+        <span class="badge badge-feature">支援 Diff 差異檢視</span>
       </div>
       <p class="subtitle">極簡 Git Web GUI 工具 (Node.js + Vue 3)</p>
     </header>
@@ -321,7 +328,7 @@ onMounted(() => {
             <tr>
               <th style="width: 170px;">狀態標籤</th>
               <th style="width: 80px;">代碼</th>
-              <th>檔案相對路徑（點擊查看 Diff）</th>
+              <th>檔案相對路徑（點擊任一檔案即時展開 Diff）</th>
             </tr>
           </thead>
           <tbody>
@@ -342,7 +349,9 @@ onMounted(() => {
               </td>
               <td class="file-path-cell">
                 <span class="file-path">{{ item.path }}</span>
-                <span class="view-diff-hint">點擊查看 ➔</span>
+                <span class="diff-action-tag" :class="{ 'active-tag': selectedFile?.path === item.path }">
+                  {{ selectedFile?.path === item.path ? '檢視中 ✓' : '點擊看 Diff ➔' }}
+                </span>
               </td>
             </tr>
           </tbody>
@@ -354,6 +363,7 @@ onMounted(() => {
         <div class="empty-icon">🎉</div>
         <p class="empty-text">Working Tree Clean</p>
         <p class="empty-sub">目前沒有未提交的異動檔案</p>
+        <p class="empty-tip">💡 提示：若要檢視 Diff 差異，請在此專案目錄隨意修改任一檔案，再點擊上方的「Refresh 整理狀態」，下方將自動展開該檔案的 Diff 差異！</p>
       </div>
     </section>
 
@@ -766,15 +776,46 @@ input[type="text"]:focus {
   color: #1f2328;
 }
 
-.view-diff-hint {
+.badge-feature {
+  background: #2da44e;
+  color: #ffffff;
   font-size: 0.75rem;
-  color: #0969da;
-  opacity: 0;
-  transition: opacity 0.15s ease;
+  font-weight: 600;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
 }
 
-.clickable-row:hover .view-diff-hint {
-  opacity: 1;
+.diff-action-tag {
+  font-size: 0.75rem;
+  padding: 0.15rem 0.5rem;
+  border-radius: 4px;
+  background-color: #f0f7ff;
+  color: #0969da;
+  border: 1px solid #0969da40;
+  font-weight: 500;
+  transition: all 0.15s ease;
+}
+
+.diff-action-tag.active-tag {
+  background-color: #0969da;
+  color: #ffffff;
+  border-color: #0969da;
+  font-weight: 600;
+}
+
+.clickable-row:hover .diff-action-tag:not(.active-tag) {
+  background-color: #ddf4ff;
+  border-color: #0969da;
+}
+
+.empty-tip {
+  font-size: 0.825rem;
+  color: #0969da;
+  background-color: #ddf4ff;
+  padding: 0.5rem 0.75rem;
+  border-radius: 6px;
+  margin-top: 0.75rem;
+  display: inline-block;
 }
 
 /* Diff 檢視區塊 */
