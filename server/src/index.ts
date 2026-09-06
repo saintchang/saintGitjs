@@ -1,6 +1,6 @@
 import express, { Request, Response } from 'express';
 import cors from 'cors';
-import { getStatus, stageAll, commit } from './gitService.js';
+import { getStatus, stageAll, commit, getDiff } from './gitService.js';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -56,6 +56,25 @@ app.post('/api/git/commit', async (req: Request, res: Response) => {
   }
 });
 
+// 4. 取得檔案差異 (Diff)
+app.post('/api/git/diff', async (req: Request, res: Response) => {
+  const { repoPath, filePath, staged, isUntracked } = req.body;
+  if (!repoPath || typeof repoPath !== 'string') {
+    return res.status(400).json({ error: 'repoPath is required' });
+  }
+  if (!filePath || typeof filePath !== 'string') {
+    return res.status(400).json({ error: 'filePath is required' });
+  }
+
+  try {
+    const diff = await getDiff(repoPath, filePath, Boolean(staged), Boolean(isUntracked));
+    return res.json({ diff, filePath, staged: Boolean(staged), isUntracked: Boolean(isUntracked) });
+  } catch (err: any) {
+    return res.status(400).json({ error: err.message });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`Git backend server listening on http://localhost:${PORT}`);
 });
+

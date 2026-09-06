@@ -60,3 +60,36 @@ export async function commit(repoPath: string, message: string): Promise<string>
 
   return data.output || 'Commit successful';
 }
+
+export interface DiffResponse {
+  diff: string;
+  filePath: string;
+  staged: boolean;
+  isUntracked: boolean;
+}
+
+/**
+ * 取得檔案差異 (Diff)
+ */
+export async function get_diff(
+  repoPath: string,
+  filePath: string,
+  staged: boolean = false,
+  isUntracked: boolean = false
+): Promise<DiffResponse> {
+  const res = await fetch('/api/git/diff', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ repoPath, filePath, staged, isUntracked }),
+  });
+
+  const data = await res.json();
+  if (!res.ok) {
+    throw new Error(data.error || `HTTP ${res.status}: Failed to get diff`);
+  }
+
+  return data as DiffResponse;
+}
+

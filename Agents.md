@@ -52,7 +52,7 @@ saintGit2/
 
 ## 4. API 與資料結構規範
 
-後端提供 3 個核心 POST 端點，皆以 JSON 通訊。
+後端提供 4 個核心 POST 端點，皆以 JSON 通訊。
 
 ### 資料結構 (TypeScript)
 ```typescript
@@ -76,6 +76,13 @@ interface GitFileStatus {
    - Request Body: `{ "repoPath": string, "message": string }`
    - Response: `{ "success": true, "output": string }`
    - 指令：`git commit -m <message>`
+4. `POST /api/git/diff`
+   - Request Body: `{ "repoPath": string, "filePath": string, "staged"?: boolean, "isUntracked"?: boolean }`
+   - Response: `{ "diff": string, "filePath": string, "staged": boolean, "isUntracked": boolean }`
+   - 指令：
+     - `staged = true`: `git diff --cached -- <filePath>`
+     - `isUntracked = true`: `git diff --no-index -- /dev/null <filePath>`
+     - 一般未暫存: `git diff -- <filePath>`
 
 ### 錯誤邊界處理
 - 當子行程 exit code 非 0 或拋出異常（例如無效路徑、非 Git 倉庫）：
@@ -89,9 +96,10 @@ interface GitFileStatus {
 MVP 介面需維持極簡，包含以下元件與狀態流：
 1. **Repo 路徑輸入框**：手動輸入本地 Repo 絕對路徑（提供預設或記錄於 localStorage）。
 2. **Refresh 按鈕**：呼叫 `POST /api/git/status`，更新異動清單。
-3. **檔案異動清單**：列表顯示每筆異動之 `statusCode` 與 `path`；清單為空時顯示 "Working Tree Clean"。
-4. **Stage All 按鈕**：單鍵呼叫 `POST /api/git/stage-all`，成功後自動刷新清單。
-5. **Commit 區塊**：Commit Message 輸入框 + Commit 按鈕，送出後自動清空輸入框並刷新清單。
+3. **檔案異動清單**：列表顯示每筆異動之彩色狀態標籤、狀態代碼與檔案路徑；清單為空時顯示 "Working Tree Clean"；點擊任一檔案列可選取並載入其 Diff。
+4. **檔案差異檢視 (Diff Viewer)**：點擊檔案後展開，顯示該檔案之 Unified Diff，以紅/綠行高亮呈現，並支援雙重異動（如 MM）切換已暫存/未暫存差異。
+5. **Stage All 按鈕**：單鍵呼叫 `POST /api/git/stage-all`，成功後自動刷新清單並同步更新 Diff。
+6. **Commit 區塊**：Commit Message 輸入框 + Commit 按鈕，暫存區為空時自動防呆禁用，送出後自動清空輸入框並刷新清單。
 
 ---
 

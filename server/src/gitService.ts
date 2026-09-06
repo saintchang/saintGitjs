@@ -78,3 +78,47 @@ export async function commit(repoPath: string, message: string): Promise<string>
     throw err;
   }
 }
+
+/**
+ * 取得檔案差異 (Diff)
+ * @param repoPath 本地專案絕對路徑
+ * @param filePath 檔案相對路徑
+ * @param staged 是否查看已暫存差異 (--cached)
+ * @param isUntracked 是否為未追蹤檔案 (--no-index)
+ */
+export async function getDiff(
+  repoPath: string,
+  filePath: string,
+  staged: boolean = false,
+  isUntracked: boolean = false
+): Promise<string> {
+  if (!filePath || filePath.trim().length === 0) {
+    throw new Error('filePath is required');
+  }
+
+  let args: string[];
+  if (isUntracked) {
+    // 未追蹤檔案與 /dev/null 比較以取得全量新增內容
+    args = ['diff', '--no-index', '--', '/dev/null', filePath];
+  } else if (staged) {
+    args = ['diff', '--cached', '--', filePath];
+  } else {
+    args = ['diff', '--', filePath];
+  }
+
+  try {
+    const result = await execFileAsync('git', args, {
+      cwd: repoPath,
+      windowsHide: true,
+      maxBuffer: 10 * 1024 * 1024,
+    });
+    return result.stdout.toString().trim();
+  } catch (error: any) {
+    // git diff --no-index 在發現差異時 exit code 為 1，stdout 仍為正常 diff 內容
+    if (error.code === 1 && error.stdout) {
+      return error.stdout.toString().trim();
+    }
+    const stderr = error.stderr?.toString() || error.stdout?.toString() || error.message || 'Failed to get diff';
+    throw new Error(stderr.trim());
+  }
+}

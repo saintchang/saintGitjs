@@ -16,7 +16,7 @@
 | **Repo 載入** | 文字框手動輸入路徑（或寫死預設路徑） | 系統原生檔案選擇器 (File Dialog) | 瀏覽器安全限制與避免初期引入複雜外殼 |
 | **檔案變更** | 取得異動清單（狀態代碼 + 相對路徑） | 檔案分類標籤、樹狀結構、圖示 | 簡化前端狀態管理與視覺渲染 |
 | **暫存操作** | 單鍵全部暫存 (`git add .`) | 單檔 Stage / Unstage、行級暫存 | 降低 UI 互動複雜度 |
-| **檢視差異** | 不支援 Diff 顯示 | 行級 Diff 比較、語法高亮 | Diff 解析耗時，非核心通訊驗證必要項目 |
+| **檢視差異** | 點擊單檔查看 Unified Diff（新增綠/刪除紅） | 雙欄 (Side-by-Side) Diff、語法著色庫 | 維持輕量零相依設計，使用原生 git diff |
 | **提交變更** | 輸入文字並提交 (`git commit -m`) | Commit 模板、Amend、GPG 簽章 | 專注驗證命令執行與結果回傳 |
 | **環境驗證** | 開發者本地單一 OS | 跨平台 (Windows/macOS/Linux) 適配 | 避免初期卡在環境變數與跨平台路徑差異 |
 
@@ -89,6 +89,31 @@ interface GitFileStatus {
 - **Response**: `{ "success": true, "output": string }`
 - **底層對應**: `git commit -m <message>`
 
+##### 4. 取得檔案差異 (Diff)
+- **Method / Path**: `POST /api/git/diff`
+- **Request Body**:
+  ```json
+  {
+    "repoPath": "C:/path/to/repo",
+    "filePath": "src/App.vue",
+    "staged": false,
+    "isUntracked": false
+  }
+  ```
+- **Response**:
+  ```json
+  {
+    "diff": "diff --git a/... b/...",
+    "filePath": "src/App.vue",
+    "staged": false,
+    "isUntracked": false
+  }
+  ```
+- **底層對應**:
+  - `staged = true`: `git diff --cached -- <filePath>`
+  - `isUntracked = true`: `git diff --no-index -- /dev/null <filePath>`
+  - 一般未暫存: `git diff -- <filePath>`
+
 #### 前端 API 呼叫簽名 (TypeScript Client)
 
 ```typescript
@@ -96,6 +121,7 @@ interface GitFileStatus {
 get_status(repoPath: string): Promise<GitFileStatus[]>;
 stage_all(repoPath: string): Promise<void>;
 commit(repoPath: string, message: string): Promise<string>;
+get_diff(repoPath: string, filePath: string, staged?: boolean, isUntracked?: boolean): Promise<DiffResponse>;
 ```
 
 ## 5. 底層 CLI 實作細節規範
