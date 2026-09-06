@@ -16,6 +16,7 @@ const fileStatuses = ref<GitFileStatus[]>([]);
 const allFiles = ref<string[]>([]);
 const allFilesSearch = ref<string>('');
 const activeListTab = ref<'changes' | 'all'>('changes');
+const isAllFilesExpanded = ref<boolean>(false);
 const commitMessage = ref<string>('');
 const isLoading = ref<boolean>(false);
 const errorMsg = ref<string>('');
@@ -75,6 +76,11 @@ const filteredAllFiles = computed(() => {
   return allFiles.value.filter((f) => f.toLowerCase().includes(q));
 });
 
+// 取得特定檔案的當前狀態 (若非異動檔案則視為乾淨/已提交)
+const getFileStatus = (path: string): GitFileStatus => {
+  return fileStatuses.value.find((f) => f.path === path) || { statusCode: '  ', path };
+};
+
 // 解析狀態徽章呈現資訊
 const getStatusBadge = (code: string) => {
   const s0 = code[0] || ' ';
@@ -99,7 +105,7 @@ const getStatusBadge = (code: string) => {
     return { class: 'tag-unstaged', label: '未暫存刪除 (Deleted)' };
   }
   if (code.trim() === '') {
-    return { class: 'tag-default', label: '已提交 (Committed)' };
+    return { class: 'tag-committed', label: '已提交 (Clean)' };
   }
   return { class: 'tag-default', label: '異動' };
 };
@@ -115,7 +121,9 @@ const fetchStatusData = async () => {
   ]);
 
   fileStatuses.value = statuses;
-  allFiles.value = files;
+  // 確保 status 中的異動檔案必然完整呈現於全庫檔案列表中
+  const mergedFiles = new Set([...files, ...statuses.map((s) => s.path)]);
+  allFiles.value = Array.from(mergedFiles).sort((a, b) => a.localeCompare(b));
   hasLoaded.value = true;
 
   // 若有異動檔案：維持當前選取的檔案，或自動預設選取第 1 個檔案展示 Diff
@@ -481,12 +489,24 @@ onMounted(() => {
             placeholder="🔍 輸入關鍵字搜尋任意檔案 (例如：App.vue, package.json, src/)..."
           />
           <span class="search-stat">顯示 {{ filteredAllFiles.length }} / 共 {{ allFiles.length }} 個檔案</span>
+          <button
+            class="btn btn-outline btn-sm"
+            type="button"
+            @click="isAllFilesExpanded = !isAllFilesExpanded"
+          >
+            {{ isAllFilesExpanded ? '收合高度' : '展開全部' }}
+          </button>
         </div>
 
-        <div v-if="filteredAllFiles.length > 0" class="file-table-wrapper all-files-table">
+        <div
+          v-if="filteredAllFiles.length > 0"
+          class="file-table-wrapper all-files-table"
+          :class="{ expanded: isAllFilesExpanded }"
+        >
           <table class="file-table">
             <thead>
               <tr>
+                <th style="width: 170px;">狀態標籤</th>
                 <th>檔案相對路徑</th>
                 <th style="width: 160px; text-align: right;">操作</th>
               </tr>
@@ -499,6 +519,11 @@ onMounted(() => {
                 :class="{ 'active-row': selectedFile?.path === file }"
                 @click="handleSelectFromAllFiles(file)"
               >
+                <td>
+                  <span class="tag" :class="getStatusBadge(getFileStatus(file).statusCode).class">
+                    {{ getStatusBadge(getFileStatus(file).statusCode).label }}
+                  </span>
+                </td>
                 <td class="file-path">{{ file }}</td>
                 <td style="text-align: right;">
                   <span class="diff-action-tag" :class="{ 'active-tag': selectedFile?.path === file }">
@@ -788,6 +813,22 @@ input[type="text"]:focus {
   background-color: #1a7f37;
 }
 
+.btn-outline {
+  background-color: #ffffff;
+  color: #24292f;
+  border-color: #d0d7de;
+}
+.btn-outline:hover:not(:disabled) {
+  background-color: #f3f4f6;
+  border-color: #8c959f;
+}
+
+.btn-sm {
+  padding: 0.35rem 0.75rem;
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+
 /* 提示訊息 Alert */
 .alert {
   display: flex;
@@ -932,8 +973,32 @@ input[type="text"]:focus {
 }
 
 .all-files-table {
-  max-height: 380px;
+  max-height: 480px;
   overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: #afb8c1 #f6f8fa;
+}
+
+.all-files-table.expanded {
+  max-height: none;
+}
+
+.all-files-table::-webkit-scrollbar {
+  width: 8px;
+}
+
+.all-files-table::-webkit-scrollbar-track {
+  background: #f6f8fa;
+  border-radius: 4px;
+}
+
+.all-files-table::-webkit-scrollbar-thumb {
+  background-color: #d0d7de;
+  border-radius: 4px;
+}
+
+.all-files-table::-webkit-scrollbar-thumb:hover {
+  background-color: #8c959f;
 }
 
 .empty-search {
@@ -1013,6 +1078,12 @@ input[type="text"]:focus {
   background-color: #f2e7fe;
   color: #8250df;
   border: 1px solid #d2a8ff40;
+}
+
+.tag-committed {
+  background-color: #f6f8fa;
+  color: #57606a;
+  border: 1px solid #d0d7de;
 }
 
 .tag-default {

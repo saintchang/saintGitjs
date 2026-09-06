@@ -11,10 +11,16 @@ export interface GitFileStatus {
 /**
  * 執行 Git 指令工具函式
  * 嚴格使用參數陣列傳遞，防止命令注入
+ * 強制 core.quotepath=false 避免中文或特殊檔名被八進位轉義
  */
-async function runGit(args: string[], cwd: string): Promise<{ stdout: string; stderr: string }> {
+async function runGit(
+  args: string[],
+  cwd: string,
+  allowDiffExit1: boolean = false
+): Promise<{ stdout: string; stderr: string }> {
   try {
-    const result = await execFileAsync('git', args, {
+    const finalArgs = ['-c', 'core.quotepath=false', ...args];
+    const result = await execFileAsync('git', finalArgs, {
       cwd,
       windowsHide: true,
       maxBuffer: 10 * 1024 * 1024, // 10MB
@@ -24,17 +30,33 @@ async function runGit(args: string[], cwd: string): Promise<{ stdout: string; st
       stderr: result.stderr.toString(),
     };
   } catch (error: any) {
+    // git diff (--no-index) 在發現差異時 exit code 為 1，stdout 仍為有效差異輸出
+    if (allowDiffExit1 && error.code === 1 && error.stdout !== undefined) {
+      return {
+        stdout: error.stdout.toString(),
+        stderr: error.stderr?.toString() || '',
+      };
+    }
     const stderr = error.stderr?.toString() || error.stdout?.toString() || error.message || 'Unknown git execution error';
     throw new Error(stderr.trim());
   }
 }
 
 /**
+ * 取得 Git Repo 的根目錄絕對路徑（確保即便使用者傳入子資料夾亦能正確取得全庫檔案）
+ */
+export async function getRepoRoot(repoPath: string): Promise<string> {
+  const { stdout } = await runGit(['rev-parse', '--show-toplevel'], repoPath);
+  return stdout.trim() || repoPath;
+}
+
+/**
  * 取得異動清單
- * 底層對應: git status --porcelain -u
+ * 底層對應: git status --porcelain -uall
  */
 export async function getStatus(repoPath: string): Promise<GitFileStatus[]> {
-  const { stdout } = await runGit(['status', '--porcelain', '-u'], repoPath);
+  const root = await getRepoRoot(repoPath);
+  const { stdout } = await runGit(['status', '--porcelain', '-uall'], root);
   const lines = stdout.split('\n');
   const fileStatuses: GitFileStatus[] = [];
 
@@ -44,7 +66,19 @@ export async function getStatus(repoPath: string): Promise<GitFileStatus[]> {
     }
     // 前兩字元為狀態代碼 (XY)，第 4 字元起（索引 3）為檔案相對路徑
     const statusCode = line.slice(0, 2);
-    const path = line.slice(3).trim();
+    let path = line.slice(3).trim();
+
+    // 處理更名格式: oldPath -> newPath
+    if (path.includes(' -> ')) {
+      const parts = path.split(' -> ');
+      path = parts[parts.length - 1].trim();
+    }
+
+    // 移除前後可能存在的引號 (若檔名包含空白或特殊字元)
+    if (path.startsWith('"') && path.endsWith('"')) {
+      path = path.slice(1, -1);
+    }
+
     fileStatuses.push({ statusCode, path });
   }
 
@@ -56,7 +90,8 @@ export async function getStatus(repoPath: string): Promise<GitFileStatus[]> {
  * 底層對應: git add .
  */
 export async function stageAll(repoPath: string): Promise<void> {
-  await runGit(['add', '.'], repoPath);
+  const root = await getRepoRoot(repoPath);
+  await runGit(['add', '.'], root);
 }
 
 /**
@@ -67,8 +102,9 @@ export async function commit(repoPath: string, message: string): Promise<string>
   if (!message || message.trim().length === 0) {
     throw new Error('Commit message cannot be empty');
   }
+  const root = await getRepoRoot(repoPath);
   try {
-    const { stdout } = await runGit(['commit', '-m', message], repoPath);
+    const { stdout } = await runGit(['commit', '-m', message], root);
     return stdout.trim();
   } catch (err: any) {
     const rawMsg = err.message || '';
@@ -87,13 +123,25 @@ export interface FileCommitInfo {
 }
 
 /**
- * 取得 Repo 內所有已追蹤檔案清單
- * 底層對應: git ls-files
+ * 取得 Repo 內所有檔案清單（包含已追蹤與未被 .gitignore 忽略的未追蹤檔案）
+ * 底層對應: git ls-files --cached --others --exclude-standard
  */
 export async function getAllFiles(repoPath: string): Promise<string[]> {
-  const { stdout } = await runGit(['ls-files'], repoPath);
+  const root = await getRepoRoot(repoPath);
+  const { stdout } = await runGit(['ls-files', '--cached', '--others', '--exclude-standard'], root);
   const lines = stdout.split('\n');
-  return lines.map((l) => l.trim()).filter((l) => l.length > 0);
+  const fileSet = new Set<string>();
+
+  for (const line of lines) {
+    let p = line.trim();
+    if (!p) continue;
+    if (p.startsWith('"') && p.endsWith('"')) {
+      p = p.slice(1, -1);
+    }
+    fileSet.add(p);
+  }
+
+  return Array.from(fileSet).sort((a, b) => a.localeCompare(b));
 }
 
 /**
@@ -109,10 +157,13 @@ export async function getFileCommits(
     throw new Error('filePath is required');
   }
 
+  const root = await getRepoRoot(repoPath);
+  const normalizedPath = filePath.replace(/\\/g, '/');
+
   try {
     const { stdout } = await runGit(
-      ['log', `-n`, String(limit), '--pretty=format:%h|%s|%cr|%an', '--', filePath],
-      repoPath
+      ['log', `-n`, String(limit), '--pretty=format:%h|%s|%cr|%an', '--', normalizedPath],
+      root
     );
 
     const lines = stdout.split('\n');
@@ -157,32 +208,22 @@ export async function getDiff(
     throw new Error('filePath is required');
   }
 
+  const root = await getRepoRoot(repoPath);
+  const normalizedPath = filePath.replace(/\\/g, '/');
+
   let args: string[];
   if (commitHash && commitHash.trim().length > 0) {
     // 檢視特定歷史 Commit 對此檔案之改動
-    args = ['show', commitHash.trim(), '--', filePath];
+    args = ['show', commitHash.trim(), '--', normalizedPath];
   } else if (isUntracked) {
     // 未追蹤檔案與 /dev/null 比較以取得全量新增內容
-    args = ['diff', '--no-index', '--', '/dev/null', filePath];
+    args = ['diff', '--no-index', '--', '/dev/null', normalizedPath];
   } else if (staged) {
-    args = ['diff', '--cached', '--', filePath];
+    args = ['diff', '--cached', '--', normalizedPath];
   } else {
-    args = ['diff', '--', filePath];
+    args = ['diff', '--', normalizedPath];
   }
 
-  try {
-    const result = await execFileAsync('git', args, {
-      cwd: repoPath,
-      windowsHide: true,
-      maxBuffer: 10 * 1024 * 1024,
-    });
-    return result.stdout.toString().trim();
-  } catch (error: any) {
-    // git diff --no-index 在發現差異時 exit code 為 1，stdout 仍為正常 diff 內容
-    if (error.code === 1 && error.stdout) {
-      return error.stdout.toString().trim();
-    }
-    const stderr = error.stderr?.toString() || error.stdout?.toString() || error.message || 'Failed to get diff';
-    throw new Error(stderr.trim());
-  }
+  const { stdout } = await runGit(args, root, true);
+  return stdout.trim();
 }
